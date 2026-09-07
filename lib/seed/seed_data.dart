@@ -1,0 +1,64 @@
+import '../models/author.dart';
+import '../models/book.dart';
+import '../models/genre.dart';
+import '../models/publisher.dart';
+
+const seedGenres = <Genre>[
+  Genre(id: 1, name: 'Роман'),
+  Genre(id: 2, name: 'Фэнтези'),
+  Genre(id: 3, name: 'Научпоп'),
+  Genre(id: 4, name: 'История'),
+  Genre(id: 5, name: 'Программирование'),
+];
+
+const seedPublishers = <Publisher>[
+  Publisher(id: 1, name: 'Питер'),
+  Publisher(id: 2, name: 'O\'Reilly'),
+  Publisher(id: 3, name: 'Penguin'),
+  Publisher(id: 4, name: 'Эксмо'),
+];
+
+const seedAuthors = <Author>[
+  Author(id: 1, firstName: 'Лев', lastName: 'Толстой', country: 'Россия'),
+  Author(id: 2, firstName: 'Фёдор', lastName: 'Достоевский', country: 'Россия'),
+  Author(id: 3, firstName: 'Джоан', lastName: 'Роулинг', country: 'Великобритания'),
+  Author(id: 4, firstName: 'Джордж', lastName: 'Оруэлл', country: 'Великобритания'),
+  Author(id: 5, firstName: 'Харуки', lastName: 'Мураками', country: 'Япония'),
+  Author(id: 6, firstName: 'Роберт', lastName: 'Мартин', country: 'США'),
+  Author(id: 7, firstName: 'Кент', lastName: 'Бек', country: 'США'),
+  Author(id: 8, firstName: 'Юваль', lastName: 'Харари', country: 'Израиль'),
+];
+
+const seedBooks = <Book>[
+  Book(id: 1, title: 'Война и мир', isbn: '978-5-00001-000-1', year: 1869, pages: 1225, publisherId: 4, authorIds: [1], genreIds: [1], copiesTotal: 5, copiesAvailable: 3),
+  Book(id: 2, title: 'Анна Каренина', isbn: '978-5-00001-000-2', year: 1877, pages: 864, publisherId: 4, authorIds: [1], genreIds: [1], copiesTotal: 4, copiesAvailable: 4),
+  Book(id: 3, title: 'Преступление и наказание', isbn: '978-5-00001-000-3', year: 1866, pages: 672, publisherId: 4, authorIds: [2], genreIds: [1], copiesTotal: 6, copiesAvailable: 1),
+  Book(id: 4, title: 'Идиот', isbn: '978-5-00001-000-4', year: 1869, pages: 640, publisherId: 4, authorIds: [2], genreIds: [1], copiesTotal: 3, copiesAvailable: 0),
+  Book(id: 5, title: '1984', isbn: '978-5-00001-000-5', year: 1949, pages: 328, publisherId: 3, authorIds: [4], genreIds: [3], copiesTotal: 7, copiesAvailable: 7),
+  Book(id: 6, title: 'Скотный двор', isbn: '978-5-00001-000-6', year: 1945, pages: 112, publisherId: 3, authorIds: [4], genreIds: [3], copiesTotal: 5, copiesAvailable: 2),
+  Book(id: 7, title: 'Гарри Поттер и философский камень', isbn: '978-5-00001-000-7', year: 1997, pages: 320, publisherId: 3, authorIds: [3], genreIds: [2], copiesTotal: 10, copiesAvailable: 8),
+  Book(id: 8, title: 'Гарри Поттер и Тайная комната', isbn: '978-5-00001-000-8', year: 1998, pages: 352, publisherId: 3, authorIds: [3], genreIds: [2], copiesTotal: 10, copiesAvailable: 6),
+  Book(id: 9, title: 'Норвежский лес', isbn: '978-5-00001-000-9', year: 1987, pages: 296, publisherId: 4, authorIds: [5], genreIds: [1], copiesTotal: 4, copiesAvailable: 1),
+  Book(id: 10, title: 'Кафка на пляже', isbn: '978-5-00001-001-0', year: 2002, pages: 512, publisherId: 4, authorIds: [5], genreIds: [1], copiesTotal: 4, copiesAvailable: 4),
+  Book(id: 11, title: 'Чистый код', isbn: '978-5-00001-001-1', year: 2008, pages: 464, publisherId: 2, authorIds: [6], genreIds: [5], copiesTotal: 8, copiesAvailable: 5),
+  Book(id: 12, title: 'Чистая архитектура', isbn: '978-5-00001-001-2', year: 2017, pages: 432, publisherId: 2, authorIds: [6], genreIds: [5], copiesTotal: 6, copiesAvailable: 6),
+  Book(id: 13, title: 'Экстремальное программирование', isbn: '978-5-00001-001-3', year: 1999, pages: 256, publisherId: 2, authorIds: [7], genreIds: [5], copiesTotal: 3, copiesAvailable: 2),
+  Book(id: 14, title: 'Переосмысление качества', isbn: '978-5-00001-001-4', year: 2002, pages: 240, publisherId: 2, authorIds: [7], genreIds: [5], copiesTotal: 3, copiesAvailable: 3),
+  Book(id: 15, title: 'Sapiens. Краткая история человечества', isbn: '978-5-00001-001-5', year: 2011, pages: 520, publisherId: 1, authorIds: [8], genreIds: [4], copiesTotal: 9, copiesAvailable: 9),
+  Book(id: 16, title: 'Homo Deus', isbn: '978-5-00001-001-6', year: 2015, pages: 448, publisherId: 1, authorIds: [8], genreIds: [4], copiesTotal: 6, copiesAvailable: 4),
+  Book(id: 17, title: 'Короткие истории', isbn: '978-5-00001-001-7', year: 2018, pages: 336, publisherId: 1, authorIds: [8], genreIds: [4], copiesTotal: 5, copiesAvailable: 2),
+  Book(id: 18, title: 'Сборник рассказов (пример)', isbn: '978-5-00001-001-8', year: 2005, pages: 180, publisherId: 3, authorIds: [5], genreIds: [1], copiesTotal: 2, copiesAvailable: 2),
+  Book(id: 19, title: 'Учебник по истории (пример)', isbn: '978-5-00001-001-9', year: 2010, pages: 600, publisherId: 1, authorIds: [8], genreIds: [4], copiesTotal: 2, copiesAvailable: 1),
+  Book(id: 20, title: 'Основы программирования (пример)', isbn: '978-5-00001-002-0', year: 2020, pages: 350, publisherId: 1, authorIds: [6, 7], genreIds: [5], copiesTotal: 7, copiesAvailable: 7),
+];
+
+final genreById = {for (final g in seedGenres) g.id: g};
+final publisherById = {for (final p in seedPublishers) p.id: p};
+final authorById = {for (final a in seedAuthors) a.id: a};
+
+String authorShortName(int id) {
+  final a = authorById[id];
+  if (a == null) return 'Автор #$id';
+  final initial = a.firstName.isNotEmpty ? a.firstName[0] : '';
+  return '${a.lastName} $initial.';
+}
