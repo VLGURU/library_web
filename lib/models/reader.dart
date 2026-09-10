@@ -1,32 +1,38 @@
-class Author {
+import 'library_card.dart';
+
+class Reader {
   final int id;
   final String firstName;
   final String lastName;
-  final String country;
+  final String email;
+  final LibraryCard card;
   final DateTime? deletedAt;
 
-  const Author({
+  const Reader({
     required this.id,
     required this.firstName,
     required this.lastName,
-    required this.country,
+    required this.email,
+    required this.card,
     this.deletedAt,
   });
 
   bool get isDeleted => deletedAt != null;
 
-  Author copyWith({
+  Reader copyWith({
     String? firstName,
     String? lastName,
-    String? country,
+    String? email,
+    LibraryCard? card,
     DateTime? deletedAt,
     bool clearDeletedAt = false,
   }) {
-    return Author(
+    return Reader(
       id: id,
       firstName: firstName ?? this.firstName,
       lastName: lastName ?? this.lastName,
-      country: country ?? this.country,
+      email: email ?? this.email,
+      card: card ?? this.card,
       deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
     );
   }
@@ -35,15 +41,19 @@ class Author {
         'id': id,
         'firstName': firstName,
         'lastName': lastName,
-        'country': country,
+        'email': email,
+        'card': card.toJson(),
         'deletedAt': deletedAt?.toIso8601String(),
       };
 
-  factory Author.fromJson(Map<String, dynamic> json) => Author(
+  factory Reader.fromJson(Map<String, dynamic> json) => Reader(
         id: (json['id'] as num?)?.toInt() ?? 0,
         firstName: json['firstName'] as String? ?? '',
         lastName: json['lastName'] as String? ?? '',
-        country: json['country'] as String? ?? '',
+        email: json['email'] as String? ?? '',
+        card: LibraryCard.fromJson(
+          (json['card'] as Map?)?.cast<String, dynamic>() ?? {},
+        ),
         deletedAt: json['deletedAt'] == null
             ? null
             : DateTime.tryParse(json['deletedAt'] as String),

@@ -53,19 +53,26 @@ class EntityTable<T> extends StatelessWidget {
     }
 
     final dataColumns = <DataColumn>[];
-    if (hasSelect) dataColumns.add(const DataColumn(label: SizedBox(width: 24)));
+
+    if (hasSelect) {
+      dataColumns.add(const DataColumn(label: SizedBox(width: 24)));
+    }
 
     for (final c in columns) {
       dataColumns.add(
         DataColumn(
           label: Text(c.label),
           numeric: c.numeric,
-          onSort: c.sortField == null || onSort == null ? null : (_, __) => onSort!.call(c.sortField!),
+          onSort: c.sortField == null || onSort == null
+              ? null
+              : (int columnIndex, bool ascending) => onSort!.call(c.sortField!),
         ),
       );
     }
 
-    if (hasActions) dataColumns.add(const DataColumn(label: Text('Действия')));
+    if (hasActions) {
+      dataColumns.add(const DataColumn(label: Text('Действия')));
+    }
 
     final rows = items.map((item) {
       final id = idOf(item);
@@ -89,7 +96,10 @@ class EntityTable<T> extends StatelessWidget {
       if (hasActions) {
         cells.add(
           DataCell(
-            Row(mainAxisSize: MainAxisSize.min, children: actions!(item)),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: actions!(item),
+            ),
           ),
         );
       }

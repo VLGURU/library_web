@@ -6,8 +6,16 @@ class HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    Widget btn(String text, String path) => SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: () => context.go(path),
+            child: Text(text),
+          ),
+        );
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Каталог библиотеки')),
+      appBar: AppBar(title: const Text('Библиотека')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -16,15 +24,15 @@ class HomeScreen extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(onPressed: () => context.go('/books'), child: const Text('Книги')),
-                ),
+                btn('Книги', '/books'),
                 const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(onPressed: () => context.go('/authors'), child: const Text('Авторы')),
-                ),
+                btn('Авторы', '/authors'),
+                const SizedBox(height: 12),
+                btn('Жанры', '/genres'),
+                const SizedBox(height: 12),
+                btn('Издательства', '/publishers'),
+                const SizedBox(height: 12),
+                btn('Читатели', '/readers'),
               ],
             ),
           ),
