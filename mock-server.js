@@ -1,5 +1,6 @@
 const http = require('http');
 const { URL } = require('url');
+const crypto = require('crypto');
 
 function parseArgs(argv) {
   const args = {};
@@ -21,6 +22,8 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv);
 const PORT = Number(args.port || 8080);
 const ALLOWED_ORIGIN = String(args.origin || 'http://localhost:5555');
+const ACCESS_TTL_SEC = Number(args.ttl || 900);
+const REFRESH_TTL_SEC = Number(args.refreshTtl || 7 * 24 * 60 * 60);
 
 function corsHeaders() {
   return {
@@ -61,20 +64,8 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on('error', reject);
-  });
+function nowMs() {
+  return Date.now();
 }
 
 function applyDebugDelayAndFail(urlObj, handler) {
@@ -99,11 +90,24 @@ function notFound(res) {
 }
 
 function validationError(res, errors, message = 'Ошибка валидации') {
-  sendJson(res, 422, { message, errors });
+  // чистим undefined чтобы клиент не падал
+  const clean = {};
+  for (const k of Object.keys(errors)) {
+    if (errors[k] !== undefined && errors[k] !== null) clean[k] = errors[k];
+  }
+  sendJson(res, 422, { message, errors: clean });
 }
 
 function conflict(res, message = 'Конфликт операции') {
   sendJson(res, 409, { message });
+}
+
+function forbidden(res, message = 'Недостаточно прав') {
+  sendJson(res, 403, { message });
+}
+
+function unauthorized(res, message = 'Требуется вход') {
+  sendJson(res, 401, { message });
 }
 
 function parseIdFromPath(pathname, prefix) {
@@ -123,7 +127,80 @@ function listToPage(items, page, size) {
   return { items: paged, page: safePage, size, total };
 }
 
-/* ---------------- In-memory data ---------------- */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      if (!raw) return resolve({});
+      try {
+        resolve(JSON.parse(raw));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/* ---- password hashing (server-side) ---- */
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 32);
+  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function verifyPassword(stored, password) {
+  const parts = String(stored || '').split(':');
+  if (parts.length !== 2) return false;
+  const salt = Buffer.from(parts[0], 'hex');
+  const hash = Buffer.from(parts[1], 'hex');
+  const test = crypto.scryptSync(password, salt, 32);
+  return crypto.timingSafeEqual(hash, test);
+}
+
+/* ---- roles ---- */
+
+const Role = {
+  READER: { name: 'READER', level: 1 },
+  LIBRARIAN: { name: 'LIBRARIAN', level: 2 },
+  ADMIN: { name: 'ADMIN', level: 3 },
+};
+
+function roleFromName(name) {
+  const n = String(name || '').toUpperCase().trim();
+  return Role[n] || Role.READER;
+}
+
+function hasRole(user, requiredRole) {
+  return user && roleFromName(user.role).level >= roleFromName(requiredRole).level;
+}
+
+/* ---- tokens ---- */
+
+const accessTokens = new Map();  // token -> { userId, expMs }
+const refreshTokens = new Map(); // token -> { userId, expMs }
+
+function issueTokens(userId) {
+  const accessToken = crypto.randomUUID();
+  const refreshToken = crypto.randomUUID();
+
+  accessTokens.set(accessToken, { userId, expMs: nowMs() + ACCESS_TTL_SEC * 1000 });
+  refreshTokens.set(refreshToken, { userId, expMs: nowMs() + REFRESH_TTL_SEC * 1000 });
+
+  return { accessToken, refreshToken };
+}
+
+function getBearerToken(req) {
+  const h = req.headers['authorization'];
+  if (!h) return null;
+  const s = String(h);
+  if (!s.toLowerCase().startsWith('bearer ')) return null;
+  return s.slice(7).trim();
+}
+
+/* ---- data ---- */
 
 let nextIds = {
   book: 3,
@@ -131,8 +208,41 @@ let nextIds = {
   genre: 4,
   publisher: 3,
   reader: 3,
+  user: 4,
   card: 2,
 };
+
+const users = [
+  {
+    id: 1,
+    username: 'reader',
+    passwordHash: hashPassword('reader123!'),
+    fullName: 'Reader User',
+    role: 'READER',
+    deletedAt: null,
+  },
+  {
+    id: 2,
+    username: 'librarian',
+    passwordHash: hashPassword('librarian123!'),
+    fullName: 'Librarian User',
+    role: 'LIBRARIAN',
+    deletedAt: null,
+  },
+  {
+    id: 3,
+    username: 'admin',
+    passwordHash: hashPassword('admin123!'),
+    fullName: 'Admin User',
+    role: 'ADMIN',
+    deletedAt: null,
+  },
+];
+
+const readers = [
+  { id: 1, firstName: 'Иван', lastName: 'Петров', phone: '+7 900 000-00-01', deletedAt: null },
+  { id: 2, firstName: 'Анна', lastName: 'Иванова', phone: '+7 900 000-00-02', deletedAt: null },
+];
 
 const publishers = [
   { id: 1, name: 'Питер', deletedAt: null },
@@ -151,11 +261,6 @@ const authors = [
   { id: 3, firstName: 'Жюль', lastName: 'Верн', country: 'Франция', deletedAt: null },
 ];
 
-const readers = [
-  { id: 1, firstName: 'Иван', lastName: 'Петров', phone: '+7 900 000-00-01', deletedAt: null },
-  { id: 2, firstName: 'Анна', lastName: 'Иванова', phone: '+7 900 000-00-02', deletedAt: null },
-];
-
 const books = [
   {
     id: 1,
@@ -166,8 +271,8 @@ const books = [
     publisherId: 1,
     authorIds: [1],
     genreIds: [1],
-    copiesTotal: 2,
-    copiesAvailable: 2,
+    copiesTotal: 1,
+    copiesAvailable: 0,
     deletedAt: null,
   },
   {
@@ -185,11 +290,10 @@ const books = [
   },
 ];
 
-// Для демонстрации 409 (выдача книги без свободных экземпляров)
 const libraryCards = [
   {
     id: 1,
-    bookId: 1,
+    bookId: 2,
     readerId: 1,
     issuedAt: nowIso(),
     returnedAt: null,
@@ -200,29 +304,153 @@ const libraryCards = [
 
 function expandBook(b) {
   const pub = publishers.find((p) => p.id === b.publisherId) || null;
-  const auth = (b.authorIds || [])
-    .map((id) => authors.find((a) => a.id === id))
-    .filter(Boolean);
-  const gen = (b.genreIds || [])
-    .map((id) => genres.find((g) => g.id === id))
-    .filter(Boolean);
-
+  const auth = (b.authorIds || []).map((id) => authors.find((a) => a.id === id)).filter(Boolean);
+  const gen = (b.genreIds || []).map((id) => genres.find((g) => g.id === id)).filter(Boolean);
   return { ...b, publisher: pub, authors: auth, genres: gen };
 }
 
 function expandCard(c) {
   const book = books.find((b) => b.id === c.bookId) || null;
   const reader = readers.find((r) => r.id === c.readerId) || null;
-  return {
-    ...c,
-    book: book ? expandBook(book) : null,
-    reader: reader || null,
-  };
+  return { ...c, book: book ? expandBook(book) : null, reader: reader || null };
 }
 
-/* ---------------- Books handlers ---------------- */
+function safeUser(u) {
+  return { id: u.id, username: u.username, fullName: u.fullName, role: u.role };
+}
 
-async function handleBooks(req, res, urlObj) {
+/* ---- auth middleware ---- */
+
+function requireAuth(req, res) {
+  const token = getBearerToken(req);
+  if (!token) {
+    unauthorized(res);
+    return null;
+  }
+
+  const rec = accessTokens.get(token);
+  if (!rec) {
+    unauthorized(res, 'Токен недействителен');
+    return null;
+  }
+
+  if (rec.expMs <= nowMs()) {
+    accessTokens.delete(token);
+    unauthorized(res, 'Срок действия токена истёк');
+    return null;
+  }
+
+  const user = users.find((u) => u.id === rec.userId);
+  if (!user) {
+    unauthorized(res, 'Пользователь не найден');
+    return null;
+  }
+
+  return user;
+}
+
+/* ---- AUTH endpoints ---- */
+
+async function handleAuthRegister(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return sendJson(res, 400, { message: 'Некорректный JSON' });
+  }
+
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '').trim();
+  const fullName = String(body.fullName || '').trim();
+
+  const errors = {};
+  if (!username) errors.username = 'Поле обязательно';
+  if (!password) errors.password = 'Поле обязательно';
+  if (!fullName) errors.fullName = 'Поле обязательно';
+
+  if (password) {
+    const hasDigit = /\d/.test(password);
+    const hasSpec = /[^a-zA-Z0-9]/.test(password);
+    if (password.length < 8) errors.password = 'Минимум 8 символов';
+    else if (!hasDigit) errors.password = 'Должна быть цифра';
+    else if (!hasSpec) errors.password = 'Должен быть спецсимвол';
+  }
+
+  if (username && users.some((u) => u.username.toLowerCase() === username.toLowerCase())) {
+    errors.username = 'Логин уже занят';
+  }
+
+  if (Object.keys(errors).length) return validationError(res, errors);
+
+  const created = {
+    id: nextIds.user++,
+    username,
+    passwordHash: hashPassword(password),
+    fullName,
+    role: 'READER',
+    deletedAt: null,
+  };
+  users.push(created);
+
+  const tokens = issueTokens(created.id);
+  sendJson(res, 200, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, user: safeUser(created) });
+}
+
+async function handleAuthLogin(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return sendJson(res, 400, { message: 'Некорректный JSON' });
+  }
+
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '').trim();
+
+  if (!username || !password) {
+    return validationError(res, {
+      username: !username ? 'Поле обязательно' : undefined,
+      password: !password ? 'Поле обязательно' : undefined,
+    });
+  }
+
+  const user = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+  if (!user || !verifyPassword(user.passwordHash, password)) {
+    return unauthorized(res, 'Неверный логин или пароль');
+  }
+
+  const tokens = issueTokens(user.id);
+  sendJson(res, 200, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, user: safeUser(user) });
+}
+
+async function handleAuthRefresh(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch {
+    return sendJson(res, 400, { message: 'Некорректный JSON' });
+  }
+
+  const refreshToken = String(body.refreshToken || '').trim();
+  if (!refreshToken) return validationError(res, { refreshToken: 'Поле обязательно' });
+
+  const rec = refreshTokens.get(refreshToken);
+  if (!rec) return unauthorized(res, 'refresh token недействителен');
+  if (rec.expMs <= nowMs()) {
+    refreshTokens.delete(refreshToken);
+    return unauthorized(res, 'refresh token истёк');
+  }
+
+  const user = users.find((u) => u.id === rec.userId);
+  if (!user) return unauthorized(res, 'Пользователь не найден');
+
+  const tokens = issueTokens(user.id);
+  sendJson(res, 200, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, user: safeUser(user) });
+}
+
+/* ---- BOOKS (GET for all, write only librarian+, hard delete admin) ---- */
+
+async function handleBooks(req, res, urlObj, user) {
   if (req.method === 'GET') {
     const includeDeleted = isTruthy(urlObj.searchParams.get('includeDeleted'));
     const search = (urlObj.searchParams.get('search') || '').trim().toLowerCase();
@@ -265,23 +493,18 @@ async function handleBooks(req, res, urlObj) {
     });
 
     const pageObj = listToPage(items, page, size);
-
-    sendJson(res, 200, {
-      items: pageObj.items.map(expandBook),
-      page: pageObj.page,
-      size: pageObj.size,
-      total: pageObj.total,
-    });
+    sendJson(res, 200, { items: pageObj.items.map(expandBook), page: pageObj.page, size: pageObj.size, total: pageObj.total });
     return;
   }
+
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
 
   if (req.method === 'POST') {
     let body;
     try {
       body = await readBody(req);
     } catch {
-      sendJson(res, 400, { message: 'Некорректный JSON' });
-      return;
+      return sendJson(res, 400, { message: 'Некорректный JSON' });
     }
 
     const errors = {};
@@ -290,12 +513,8 @@ async function handleBooks(req, res, urlObj) {
     const year = toInt(body.year, null);
     const pages = toInt(body.pages, null);
     const publisherId = toInt(body.publisherId, null);
-    const authorIds = Array.isArray(body.authorIds)
-      ? body.authorIds.map((x) => toInt(x, null)).filter((x) => x)
-      : [];
-    const genreIds = Array.isArray(body.genreIds)
-      ? body.genreIds.map((x) => toInt(x, null)).filter((x) => x)
-      : [];
+    const authorIds = Array.isArray(body.authorIds) ? body.authorIds.map((x) => toInt(x, null)).filter(Boolean) : [];
+    const genreIds = Array.isArray(body.genreIds) ? body.genreIds.map((x) => toInt(x, null)).filter(Boolean) : [];
     const copiesTotal = toInt(body.copiesTotal, null);
 
     if (!title) errors.title = 'Поле обязательно';
@@ -309,16 +528,6 @@ async function handleBooks(req, res, urlObj) {
 
     const isbnExists = books.some((b) => String(b.isbn || '').toLowerCase() === isbn.toLowerCase());
     if (isbn && isbnExists) errors.isbn = 'ISBN уже существует';
-
-    if (publisherId !== null && !publishers.some((p) => p.id === publisherId)) {
-      errors.publisherId = 'Издатель не существует';
-    }
-    if (authorIds.length && authorIds.some((id) => !authors.some((a) => a.id === id))) {
-      errors.authorIds = 'Один из авторов не существует';
-    }
-    if (genreIds.length && genreIds.some((id) => !genres.some((g) => g.id === id))) {
-      errors.genreIds = 'Один из жанров не существует';
-    }
 
     if (Object.keys(errors).length) return validationError(res, errors);
 
@@ -336,7 +545,6 @@ async function handleBooks(req, res, urlObj) {
       deletedAt: null,
     };
     books.push(created);
-
     sendJson(res, 200, expandBook(created));
     return;
   }
@@ -344,27 +552,21 @@ async function handleBooks(req, res, urlObj) {
   notFound(res);
 }
 
-async function handleBookById(req, res, urlObj, id) {
+async function handleBookById(req, res, urlObj, user, id) {
   const hard = isTruthy(urlObj.searchParams.get('hard'));
   const book = books.find((b) => b.id === id);
+  if (!book) return sendJson(res, 404, { message: 'Книга не найдена' });
 
-  if (!book) {
-    sendJson(res, 404, { message: 'Книга не найдена' });
-    return;
-  }
+  if (req.method === 'GET') return sendJson(res, 200, expandBook(book));
 
-  if (req.method === 'GET') {
-    sendJson(res, 200, expandBook(book));
-    return;
-  }
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
 
   if (req.method === 'PUT') {
     let body;
     try {
       body = await readBody(req);
     } catch {
-      sendJson(res, 400, { message: 'Некорректный JSON' });
-      return;
+      return sendJson(res, 400, { message: 'Некорректный JSON' });
     }
 
     const errors = {};
@@ -373,12 +575,8 @@ async function handleBookById(req, res, urlObj, id) {
     const year = toInt(body.year, null);
     const pages = toInt(body.pages, null);
     const publisherId = toInt(body.publisherId, null);
-    const authorIds = Array.isArray(body.authorIds)
-      ? body.authorIds.map((x) => toInt(x, null)).filter((x) => x)
-      : [];
-    const genreIds = Array.isArray(body.genreIds)
-      ? body.genreIds.map((x) => toInt(x, null)).filter((x) => x)
-      : [];
+    const authorIds = Array.isArray(body.authorIds) ? body.authorIds.map((x) => toInt(x, null)).filter(Boolean) : [];
+    const genreIds = Array.isArray(body.genreIds) ? body.genreIds.map((x) => toInt(x, null)).filter(Boolean) : [];
     const copiesTotal = toInt(body.copiesTotal, null);
 
     if (!title) errors.title = 'Поле обязательно';
@@ -390,20 +588,8 @@ async function handleBookById(req, res, urlObj, id) {
     if (!genreIds.length) errors.genreIds = 'Нужно выбрать хотя бы один жанр';
     if (copiesTotal === null || copiesTotal < 0) errors.copiesTotal = 'Некорректное значение';
 
-    const isbnExists = books.some(
-      (b) => b.id !== id && String(b.isbn || '').toLowerCase() === isbn.toLowerCase(),
-    );
+    const isbnExists = books.some((b) => b.id !== id && String(b.isbn || '').toLowerCase() === isbn.toLowerCase());
     if (isbn && isbnExists) errors.isbn = 'ISBN уже существует';
-
-    if (publisherId !== null && !publishers.some((p) => p.id === publisherId)) {
-      errors.publisherId = 'Издатель не существует';
-    }
-    if (authorIds.length && authorIds.some((aid) => !authors.some((a) => a.id === aid))) {
-      errors.authorIds = 'Один из авторов не существует';
-    }
-    if (genreIds.length && genreIds.some((gid) => !genres.some((g) => g.id === gid))) {
-      errors.genreIds = 'Один из жанров не существует';
-    }
 
     if (Object.keys(errors).length) return validationError(res, errors);
 
@@ -414,17 +600,15 @@ async function handleBookById(req, res, urlObj, id) {
     book.publisherId = publisherId;
     book.authorIds = authorIds;
     book.genreIds = genreIds;
-
-    // поджимаем available, если total уменьшили
     book.copiesTotal = copiesTotal;
     book.copiesAvailable = Math.min(book.copiesAvailable, copiesTotal);
 
-    sendJson(res, 200, expandBook(book));
-    return;
+    return sendJson(res, 200, expandBook(book));
   }
 
   if (req.method === 'DELETE') {
     if (hard) {
+      if (!hasRole(user, 'ADMIN')) return forbidden(res);
       const idx = books.findIndex((b) => b.id === id);
       if (idx >= 0) books.splice(idx, 1);
       return sendNoContent(res);
@@ -436,14 +620,17 @@ async function handleBookById(req, res, urlObj, id) {
   notFound(res);
 }
 
-async function handleBookRestore(req, res, id) {
+async function handleBookRestore(req, res, user, id) {
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
   const book = books.find((b) => b.id === id);
   if (!book) return sendJson(res, 404, { message: 'Книга не найдена' });
   book.deletedAt = null;
   sendNoContent(res);
 }
 
-async function handleBookBulkDelete(req, res) {
+async function handleBookBulkDelete(req, res, user) {
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
+
   let body;
   try {
     body = await readBody(req);
@@ -465,138 +652,18 @@ async function handleBookBulkDelete(req, res) {
   sendJson(res, 200, { deleted });
 }
 
-/* ---------------- Paged Authors handlers ---------------- */
+/* ---- library cards ---- */
 
-async function handleAuthors(req, res, urlObj) {
-  if (req.method === 'GET') {
-    const includeDeleted = isTruthy(urlObj.searchParams.get('includeDeleted'));
-    const search = (urlObj.searchParams.get('search') || '').trim().toLowerCase();
-
-    const sortParam = (urlObj.searchParams.get('sort') || 'lastName,asc').trim();
-    const [sortFieldRaw, sortDirRaw] = sortParam.split(',');
-    const sortField = (sortFieldRaw || 'lastName').trim();
-    const sortAsc = String(sortDirRaw || 'asc').toLowerCase() !== 'desc';
-
-    const page = toInt(urlObj.searchParams.get('page'), 1) || 1;
-    const size = toInt(urlObj.searchParams.get('size'), 10) || 10;
-
-    let items = authors.slice();
-    if (!includeDeleted) items = items.filter((a) => !a.deletedAt);
-
-    if (search) {
-      items = items.filter((a) => {
-        const s = `${a.firstName || ''} ${a.lastName || ''} ${a.country || ''}`.toLowerCase();
-        return s.includes(search);
-      });
-    }
-
-    items.sort((a, b) => {
-      const av = a[sortField];
-      const bv = b[sortField];
-      if (av === bv) return 0;
-      if (av === undefined || av === null) return sortAsc ? -1 : 1;
-      if (bv === undefined || bv === null) return sortAsc ? 1 : -1;
-      return (av > bv ? 1 : -1) * (sortAsc ? 1 : -1);
-    });
-
-    const pageObj = listToPage(items, page, size);
-    sendJson(res, 200, {
-      items: pageObj.items,
-      page: pageObj.page,
-      size: pageObj.size,
-      total: pageObj.total,
-    });
-    return;
-  }
-
-  if (req.method === 'POST') {
-    let body;
-    try {
-      body = await readBody(req);
-    } catch {
-      return sendJson(res, 400, { message: 'Некорректный JSON' });
-    }
-
-    const errors = {};
-    const firstName = String(body.firstName || '').trim();
-    const lastName = String(body.lastName || '').trim();
-    const country = String(body.country || '').trim();
-
-    if (!firstName) errors.firstName = 'Поле обязательно';
-    if (!lastName) errors.lastName = 'Поле обязательно';
-    if (!country) errors.country = 'Поле обязательно';
-
-    if (Object.keys(errors).length) return validationError(res, errors);
-
-    const created = {
-      id: nextIds.author++,
-      firstName,
-      lastName,
-      country,
-      deletedAt: null,
-    };
-    authors.push(created);
-    sendJson(res, 200, created);
-    return;
-  }
-
-  notFound(res);
+async function handleCardsMine(req, res, user) {
+  // учебно: readerId = user.id
+  const readerId = user.id;
+  const items = libraryCards.filter((c) => c.readerId === readerId && !c.deletedAt);
+  sendJson(res, 200, items.map(expandCard));
 }
 
-async function handleAuthorById(req, res, urlObj, id) {
-  const hard = isTruthy(urlObj.searchParams.get('hard'));
-  const author = authors.find((a) => a.id === id);
+async function handleCardIssue(req, res, user) {
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
 
-  if (!author) return sendJson(res, 404, { message: 'Автор не найден' });
-
-  if (req.method === 'GET') return sendJson(res, 200, author);
-
-  if (req.method === 'PUT') {
-    let body;
-    try {
-      body = await readBody(req);
-    } catch {
-      return sendJson(res, 400, { message: 'Некорректный JSON' });
-    }
-
-    const errors = {};
-    const firstName = String(body.firstName || '').trim();
-    const lastName = String(body.lastName || '').trim();
-    const country = String(body.country || '').trim();
-
-    if (!firstName) errors.firstName = 'Поле обязательно';
-    if (!lastName) errors.lastName = 'Поле обязательно';
-    if (!country) errors.country = 'Поле обязательно';
-
-    if (Object.keys(errors).length) return validationError(res, errors);
-
-    author.firstName = firstName;
-    author.lastName = lastName;
-    author.country = country;
-    return sendJson(res, 200, author);
-  }
-
-  if (req.method === 'DELETE') {
-    if (hard) {
-      const idx = authors.findIndex((a) => a.id === id);
-      if (idx >= 0) authors.splice(idx, 1);
-      return sendNoContent(res);
-    }
-    if (!author.deletedAt) author.deletedAt = nowIso();
-    return sendNoContent(res);
-  }
-
-  notFound(res);
-}
-
-async function handleAuthorRestore(req, res, id) {
-  const author = authors.find((a) => a.id === id);
-  if (!author) return sendJson(res, 404, { message: 'Автор не найден' });
-  author.deletedAt = null;
-  sendNoContent(res);
-}
-
-async function handleAuthorBulkDelete(req, res) {
   let body;
   try {
     body = await readBody(req);
@@ -604,138 +671,11 @@ async function handleAuthorBulkDelete(req, res) {
     return sendJson(res, 400, { message: 'Некорректный JSON' });
   }
 
-  const ids = Array.isArray(body.ids) ? body.ids.map((x) => toInt(x, null)).filter(Boolean) : [];
-  let deleted = 0;
-
-  for (const id of ids) {
-    const a = authors.find((x) => x.id === id);
-    if (a && !a.deletedAt) {
-      a.deletedAt = nowIso();
-      deleted++;
-    }
-  }
-
-  sendJson(res, 200, { deleted });
-}
-
-/* ---------------- Simple list entities (genres/publishers/readers) ---------------- */
-
-async function handleListGet(res, urlObj, storage) {
-  const includeDeleted = isTruthy(urlObj.searchParams.get('includeDeleted'));
-  let items = storage.slice();
-  if (!includeDeleted) items = items.filter((x) => !x.deletedAt);
-  sendJson(res, 200, items);
-}
-
-async function handleSimpleCreate(req, res, storage, nextKey, requiredFields) {
-  let body;
-  try {
-    body = await readBody(req);
-  } catch {
-    return sendJson(res, 400, { message: 'Некорректный JSON' });
-  }
-
-  const errors = {};
-  for (const f of requiredFields) {
-    if (!String(body[f] || '').trim()) errors[f] = 'Поле обязательно';
-  }
-  if (Object.keys(errors).length) return validationError(res, errors);
-
-  const created = { ...body, id: nextIds[nextKey]++, deletedAt: null };
-  storage.push(created);
-  sendJson(res, 200, created);
-}
-
-async function handleSimpleById(req, res, urlObj, storage, id, requiredFields) {
-  const hard = isTruthy(urlObj.searchParams.get('hard'));
-  const item = storage.find((x) => x.id === id);
-
-  if (!item) return sendJson(res, 404, { message: 'Не найдено' });
-
-  if (req.method === 'GET') return sendJson(res, 200, item);
-
-  if (req.method === 'PUT') {
-    let body;
-    try {
-      body = await readBody(req);
-    } catch {
-      return sendJson(res, 400, { message: 'Некорректный JSON' });
-    }
-
-    const errors = {};
-    for (const f of requiredFields) {
-      if (!String(body[f] || '').trim()) errors[f] = 'Поле обязательно';
-    }
-    if (Object.keys(errors).length) return validationError(res, errors);
-
-    for (const k of Object.keys(body)) {
-      if (k === 'id' || k === 'deletedAt') continue;
-      item[k] = body[k];
-    }
-
-    return sendJson(res, 200, item);
-  }
-
-  if (req.method === 'DELETE') {
-    if (hard) {
-      const idx = storage.findIndex((x) => x.id === id);
-      if (idx >= 0) storage.splice(idx, 1);
-      return sendNoContent(res);
-    }
-    if (!item.deletedAt) item.deletedAt = nowIso();
-    return sendNoContent(res);
-  }
-
-  notFound(res);
-}
-
-async function handleSimpleRestore(res, storage, id) {
-  const item = storage.find((x) => x.id === id);
-  if (!item) return sendJson(res, 404, { message: 'Не найдено' });
-  item.deletedAt = null;
-  sendNoContent(res);
-}
-
-/* ---------------- Library Cards (для демонстрации 409) ---------------- */
-
-async function handleCards(req, res, urlObj) {
-  if (req.method === 'GET') {
-    const includeDeleted = isTruthy(urlObj.searchParams.get('includeDeleted'));
-    const page = toInt(urlObj.searchParams.get('page'), 1) || 1;
-    const size = toInt(urlObj.searchParams.get('size'), 10) || 10;
-
-    let items = libraryCards.slice();
-    if (!includeDeleted) items = items.filter((c) => !c.deletedAt);
-
-    const pageObj = listToPage(items, page, size);
-    sendJson(res, 200, {
-      items: pageObj.items.map(expandCard),
-      page: pageObj.page,
-      size: pageObj.size,
-      total: pageObj.total,
-    });
-    return;
-  }
-
-  notFound(res);
-}
-
-// POST /api/library-cards/issue  body: { bookId, readerId, dueAt? }
-async function handleCardIssue(req, res) {
-  let body;
-  try {
-    body = await readBody(req);
-  } catch {
-    return sendJson(res, 400, { message: 'Некорректный JSON' });
-  }
-
-  const errors = {};
   const bookId = toInt(body.bookId, null);
   const readerId = toInt(body.readerId, null);
-
+  const errors = {};
   if (bookId === null) errors.bookId = 'Некорректная книга';
   if (readerId === null) errors.readerId = 'Некорректный читатель';
-
   if (Object.keys(errors).length) return validationError(res, errors);
 
   const book = books.find((b) => b.id === bookId);
@@ -744,9 +684,7 @@ async function handleCardIssue(req, res) {
   const reader = readers.find((r) => r.id === readerId);
   if (!reader || reader.deletedAt) return validationError(res, { readerId: 'Читатель не существует' });
 
-  if ((book.copiesAvailable || 0) <= 0) {
-    return conflict(res, 'Нет свободных экземпляров книги');
-  }
+  if ((book.copiesAvailable || 0) <= 0) return conflict(res, 'Нет свободных экземпляров книги');
 
   book.copiesAvailable -= 1;
 
@@ -756,22 +694,20 @@ async function handleCardIssue(req, res) {
     readerId,
     issuedAt: nowIso(),
     returnedAt: null,
-    dueAt: body.dueAt ? String(body.dueAt) : null,
+    dueAt: null,
     deletedAt: null,
   };
   libraryCards.push(created);
-
   sendJson(res, 200, expandCard(created));
 }
 
-// POST /api/library-cards/{id}/return
-async function handleCardReturn(req, res, id) {
+async function handleCardReturn(req, res, user, id) {
+  if (!hasRole(user, 'LIBRARIAN')) return forbidden(res);
+
   const card = libraryCards.find((c) => c.id === id);
   if (!card) return sendJson(res, 404, { message: 'Выдача не найдена' });
 
-  if (card.returnedAt) {
-    return sendNoContent(res);
-  }
+  if (card.returnedAt) return sendNoContent(res);
 
   const book = books.find((b) => b.id === card.bookId);
   if (book) {
@@ -782,103 +718,61 @@ async function handleCardReturn(req, res, id) {
   sendNoContent(res);
 }
 
-/* ---------------- Server routes ---------------- */
+/* ---- admin ---- */
+
+async function handleAdminUsers(req, res, user) {
+  if (!hasRole(user, 'ADMIN')) return forbidden(res);
+  if (req.method === 'GET') return sendJson(res, 200, users.map(safeUser));
+  notFound(res);
+}
+
+/* ---- server ---- */
 
 const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  // CORS preflight
   if (req.method === 'OPTIONS') return sendNoContent(res);
 
   const run = applyDebugDelayAndFail(urlObj, async () => {
-    // health
     if (req.method === 'GET' && urlObj.pathname === '/api/__health') {
       return sendJson(res, 200, { ok: true, time: nowIso() });
     }
 
-    // books
-    if (urlObj.pathname === '/api/books') return handleBooks(req, res, urlObj);
-    if (urlObj.pathname === '/api/books/bulk-delete' && req.method === 'POST') return handleBookBulkDelete(req, res);
+    // PUBLIC AUTH
+    if (urlObj.pathname === '/api/auth/register' && req.method === 'POST') return handleAuthRegister(req, res);
+    if (urlObj.pathname === '/api/auth/login' && req.method === 'POST') return handleAuthLogin(req, res);
+    if (urlObj.pathname === '/api/auth/refresh' && req.method === 'POST') return handleAuthRefresh(req, res);
+
+    // PROTECTED
+    const user = requireAuth(req, res);
+    if (!user) return;
+
+    // BOOKS
+    if (urlObj.pathname === '/api/books') return handleBooks(req, res, urlObj, user);
+    if (urlObj.pathname === '/api/books/bulk-delete' && req.method === 'POST') return handleBookBulkDelete(req, res, user);
 
     if (urlObj.pathname.startsWith('/api/books/')) {
       const id = parseIdFromPath(urlObj.pathname, '/api/books/');
       if (id === null) return notFound(res);
 
-      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleBookRestore(req, res, id);
+      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleBookRestore(req, res, user, id);
 
-      return handleBookById(req, res, urlObj, id);
+      return handleBookById(req, res, urlObj, user, id);
     }
 
-    // authors
-    if (urlObj.pathname === '/api/authors') return handleAuthors(req, res, urlObj);
-    if (urlObj.pathname === '/api/authors/bulk-delete' && req.method === 'POST') return handleAuthorBulkDelete(req, res);
-
-    if (urlObj.pathname.startsWith('/api/authors/')) {
-      const id = parseIdFromPath(urlObj.pathname, '/api/authors/');
-      if (id === null) return notFound(res);
-
-      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleAuthorRestore(req, res, id);
-
-      return handleAuthorById(req, res, urlObj, id);
-    }
-
-    // genres
-    if (urlObj.pathname === '/api/genres') {
-      if (req.method === 'GET') return handleListGet(res, urlObj, genres);
-      if (req.method === 'POST') return handleSimpleCreate(req, res, genres, 'genre', ['name']);
-      return notFound(res);
-    }
-    if (urlObj.pathname.startsWith('/api/genres/')) {
-      const id = parseIdFromPath(urlObj.pathname, '/api/genres/');
-      if (id === null) return notFound(res);
-
-      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleSimpleRestore(res, genres, id);
-
-      return handleSimpleById(req, res, urlObj, genres, id, ['name']);
-    }
-
-    // publishers
-    if (urlObj.pathname === '/api/publishers') {
-      if (req.method === 'GET') return handleListGet(res, urlObj, publishers);
-      if (req.method === 'POST') return handleSimpleCreate(req, res, publishers, 'publisher', ['name']);
-      return notFound(res);
-    }
-    if (urlObj.pathname.startsWith('/api/publishers/')) {
-      const id = parseIdFromPath(urlObj.pathname, '/api/publishers/');
-      if (id === null) return notFound(res);
-
-      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleSimpleRestore(res, publishers, id);
-
-      return handleSimpleById(req, res, urlObj, publishers, id, ['name']);
-    }
-
-    // readers
-    if (urlObj.pathname === '/api/readers') {
-      if (req.method === 'GET') return handleListGet(res, urlObj, readers);
-      if (req.method === 'POST') return handleSimpleCreate(req, res, readers, 'reader', ['firstName', 'lastName']);
-      return notFound(res);
-    }
-    if (urlObj.pathname.startsWith('/api/readers/')) {
-      const id = parseIdFromPath(urlObj.pathname, '/api/readers/');
-      if (id === null) return notFound(res);
-
-      if (urlObj.pathname.endsWith('/restore') && req.method === 'POST') return handleSimpleRestore(res, readers, id);
-
-      return handleSimpleById(req, res, urlObj, readers, id, ['firstName', 'lastName']);
-    }
-
-    // library cards (409 demo)
-    if (urlObj.pathname === '/api/library-cards') return handleCards(req, res, urlObj);
-    if (urlObj.pathname === '/api/library-cards/issue' && req.method === 'POST') return handleCardIssue(req, res);
+    // LIBRARY CARDS
+    if (urlObj.pathname === '/api/library-cards/mine' && req.method === 'GET') return handleCardsMine(req, res, user);
+    if (urlObj.pathname === '/api/library-cards/issue' && req.method === 'POST') return handleCardIssue(req, res, user);
 
     if (urlObj.pathname.startsWith('/api/library-cards/')) {
       const id = parseIdFromPath(urlObj.pathname, '/api/library-cards/');
       if (id === null) return notFound(res);
-
-      if (urlObj.pathname.endsWith('/return') && req.method === 'POST') return handleCardReturn(req, res, id);
+      if (urlObj.pathname.endsWith('/return') && req.method === 'POST') return handleCardReturn(req, res, user, id);
     }
 
-    // default
+    // ADMIN
+    if (urlObj.pathname === '/api/admin/users') return handleAdminUsers(req, res, user);
+
     return notFound(res);
   });
 
@@ -889,4 +783,6 @@ server.listen(PORT, () => {
   console.log(`[mock-server] listening: http://localhost:${PORT}`);
   console.log(`[mock-server] apiBaseUrl : http://localhost:${PORT}/api`);
   console.log(`[mock-server] origin    : ${ALLOWED_ORIGIN}`);
+  console.log(`[mock-server] ttl       : ${ACCESS_TTL_SEC}s`);
+  console.log(`[mock-server] accounts  : reader/reader123!, librarian/librarian123!, admin/admin123!`);
 });
